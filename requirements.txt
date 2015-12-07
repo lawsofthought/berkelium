@@ -2,6 +2,7 @@ backports-abc==0.4
 backports.ssl-match-hostname==3.4.0.2
 beautifulsoup4==4.4.1
 certifi==2015.9.6.2
+configobj==5.0.6
 decorator==4.0.4
 functools32==3.2.3.post2
 ipykernel==4.1.1
