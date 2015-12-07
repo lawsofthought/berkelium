@@ -1,7 +1,8 @@
 import os
+import configobj
 import textwrap
 import itertools
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from bs4 import BeautifulSoup
 import cPickle as pickle
 import numpy
@@ -410,8 +411,9 @@ class ParagraphSampler(object):
         word_stems = []
         _words = []
         for word in words:
-            if word not in word_stems:
-                word_stems.append(stem(word))
+            word_stem = stem(word)
+            if word_stem not in word_stems:
+                word_stems.append(word_stem)
                 _words.append(word)
 
         return _words
@@ -692,39 +694,113 @@ class ParagraphSampler(object):
 #
 #    return P
 
-def sample_paragraph_to_str(sample_paragraph, sep='\n-----\n'):
+def paragraph_or_wordlist_to_str(paragraph, sep='\n-----\n'):
 
-    text = textwrap.fill(sample_paragraph['text'], 80)
+    text = textwrap.fill(paragraph['text'], 80)
 
     wordlist\
-        = 'Wordlist: ' + textwrap.fill(', '.join(sample_paragraph['wordlist']), 80)
+        = 'Wordlist: ' + textwrap.fill(', '.join(paragraph['wordlist']), 80)
 
     targets\
-        = 'Targets: ' + textwrap.fill(', '.join(sample_paragraph['target_keywords']), 80)
+        = 'Targets: ' + textwrap.fill(', '.join(paragraph['target_keywords']), 80)
 
     lurewords\
-        = 'Lures: ' + textwrap.fill(', '.join(sample_paragraph['lure_keywords']), 80)
+        = 'Lures: ' + textwrap.fill(', '.join(paragraph['lure_keywords']), 80)
 
-    if sample_paragraph['as_wordlist']:
+    if paragraph['as_wordlist']:
         return sep.join([wordlist, targets, lurewords])
     else:
         return sep.join([text, targets, lurewords])
 
 
+def _paragraphs_or_wordlists_to_str(paragraphs_or_wordlists,
+                                    sep='\n===========\n'):
 
-def write_paragraphs_to_str(sampled_paragraphs):
-    return '\n===========\n'.join(
-            map(sample_paragraph_to_str, sampled_paragraphs)).encode('utf-8')
+    return '\n===========\n'.join(map(paragraph_or_wordlist_to_str, 
+                                      paragraphs_or_wordlists)).encode('utf-8')
 
 
-def write_paragraphs_to_file(sampled_paragraphs, filename, protocol=2):
+def write_wordlists_to_str(stimuli):
 
-    with open(filename + '.txt', 'w') as f:
-        f.write(write_paragraphs_to_str(sampled_paragraphs))
+    sampled_wordlists = [stimulus for stimulus in stimuli
+                          if stimulus['as_wordlist']]
 
-    with open(filename + '.pkl', 'wb') as f:
-        pickle.dump(sampled_paragraphs, f, protocol=protocol)
+    return _paragraphs_or_wordlists_to_str(sampled_wordlists)
 
+
+def write_paragraphs_to_str(stimuli):
+
+    sampled_paragraphs = [stimulus for stimulus in stimuli
+                          if not stimulus['as_wordlist']]
+
+    return _paragraphs_or_wordlists_to_str(sampled_paragraphs)
+
+
+def write_paragraphs_to_file(stimuli, filename):
+
+    with open(filename, 'w') as f:
+        f.write(write_paragraphs_to_str(stimuli))
+
+
+def write_wordlists_to_file(stimuli, filename):
+
+    with open(filename, 'w') as f:
+        f.write(write_wordlists_to_str(stimuli))
+
+
+def write_stimuli_to_file(stimuli, filename, protocol=2):
+
+    with open(filename, 'wb') as f:
+        pickle.dump(stimuli, f, protocol=protocol)
+
+def load_stimuli_from_file(filename):
+
+    with open(filename, 'rb') as f:
+        stimuli = pickle.load(f)
+
+    return stimuli
+
+
+
+def write_stimuli_as_configobj(stimuli, filename):
+
+    sampled_paragraphs = [stimulus for stimulus in stimuli
+                          if not stimulus['as_wordlist']]
+
+    sampled_wordlists = [stimulus for stimulus in stimuli
+                          if stimulus['as_wordlist']]
+
+    text_memoranda = OrderedDict()
+    for i, paragraph in enumerate(sampled_paragraphs):
+
+        text_id = 'text_%d' % i
+
+        text_memoranda[text_id] = OrderedDict()
+        text_memoranda[text_id]['text']\
+            = textwrap.fill(paragraph['text'].encode('utf-8'), 80)
+        text_memoranda[text_id]['inwords']\
+            = ','.join(paragraph['target_keywords']).encode('utf-8')
+        text_memoranda[text_id]['outwords']\
+            = ','.join(paragraph['lure_keywords']).encode('utf-8')
+
+    wordlist_memoranda = OrderedDict()
+    for i, wordlist in enumerate(sampled_wordlists):
+
+        wordlist_id = 'wordlist_%d' % i
+
+        wordlist_memoranda[wordlist_id] = OrderedDict()
+        wordlist_memoranda[wordlist_id]['wordlist']\
+            = ','.join(wordlist['wordlist']).encode('utf-8')
+        wordlist_memoranda[wordlist_id]['inwords']\
+            = ','.join(wordlist['target_keywords']).encode('utf-8')
+        wordlist_memoranda[wordlist_id]['outwords']\
+            = ','.join(wordlist['lure_keywords']).encode('utf-8')
+
+    C = configobj.ConfigObj(indent_type='    ')
+    C['text_memoranda'] = text_memoranda
+    C['wordlist_memoranda'] = wordlist_memoranda
+    C.filename = filename
+    C.write()
 
 def get_keywords(words, vocabulary, idf, keywords_as_dict=True):
 
@@ -875,3 +951,39 @@ def randomly_sample_as_texts_and_wordlists(sampled_paragraphs,
     for i, j in zip(I[:half_N], I[half_N:]):
         sampled_paragraphs[i]['as_wordlist'] = False
         sampled_paragraphs[j]['as_wordlist'] = True
+
+
+def fix_stimulus_51(stimuli, paragraphs, vocabulary, idf):
+    
+    """
+    Paragraph 51 contains the word "co-ordinator". The lure words contain the 
+    word coordinator, which is technically not the same word from the BNC's 
+    perspective. 
+    However, it would be best to fix this.
+    So, we will go through the list of keywords in the previous paragraph (which 
+    was where the word "coordinator" was sampled) and find another lure word.
+    """
+    
+    paragraph_51 = stimuli[51]
+    index = paragraph_51['all_paragraphs_index']
+    previous_paragraph_keywords\
+        = get_keywords(paragraphs[index-1]['words'],
+                             vocabulary,
+                             idf, 
+                             keywords_as_dict=False)
+        
+    for keyword in previous_paragraph_keywords:
+        
+        words = set(paragraph_51['keywords']\
+                    + paragraph_51['lure_keywords']\
+                    + paragraph_51['target_keywords'])
+        
+        word_stems = get_word_stems(words)
+        
+        if all([keyword not in words,
+                stem(keyword) not in word_stems]):
+            
+            break
+                
+        
+    paragraph_51['lure_keywords'][0] = keyword # replace "co-ordinator" in-place
